@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+/build/
+/zig-out/
+/.zig-cache/
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcodeproj
+.swiftpm/
+
+# IDE
+.vscode/
+.idea/
+
+# Agent harness per-project state
+/.superset/
+
+# Swift Package Manager
+/.build/
+/Packages
+
+# Local docs
+/docs/
+
+# Misc
+.netrc
+*.swp
+*~

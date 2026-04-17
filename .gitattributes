@@ -1,0 +1,2 @@
+vendor/ghostty/lib/libghostty.a filter=lfs diff=lfs merge=lfs -text
+vendor/ghostty/lib/Ghostty.metallib filter=lfs diff=lfs merge=lfs -text
