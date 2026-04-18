@@ -29,6 +29,7 @@ class ProjectSidebar: NSView {
 
     private var scrollView: NSScrollView!
     private var stackView: NSStackView!
+    private var gitStatusRefreshTimer: Timer?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -297,13 +298,19 @@ class ProjectSidebar: NSView {
 
     func refreshGitStatusRows() {
         guard window != nil else { return }
+        gitStatusRefreshTimer?.invalidate()
+        gitStatusRefreshTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: false) { [weak self] _ in
+            self?.performRefreshGitStatusRows()
+        }
+    }
 
+    private func performRefreshGitStatusRows() {
+        guard window != nil else { return }
         for arrangedSubview in stackView.arrangedSubviews {
             if let row = arrangedSubview as? WorkspaceDetailRow {
                 row.needsDisplay = true
                 continue
             }
-
             if let row = arrangedSubview as? WorkspaceWorktreeRow {
                 row.needsDisplay = true
             }

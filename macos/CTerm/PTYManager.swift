@@ -90,7 +90,7 @@ class PTYManager {
         // Background reader
         let fd = mfd
         DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            var buf = [UInt8](repeating: 0, count: 16384)
+            var buf = [UInt8](repeating: 0, count: 65536)
             while self?.masterFd == fd {
                 let n = read(fd, &buf, buf.count)
                 if n > 0 {

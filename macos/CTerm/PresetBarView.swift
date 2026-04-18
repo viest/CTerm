@@ -16,6 +16,7 @@ class PresetBarView: NSView {
     weak var delegate: PresetBarDelegate?
     private var presets: [AgentPresetItem] = []
     private var buttons: [NSView] = []
+    private var presetSignature: [String] = []
     private var contentView: NSView!
     private(set) var sidebarToggle: NSButton!
     private(set) var settingsButton: NSButton!
@@ -160,7 +161,10 @@ class PresetBarView: NSView {
     }
 
     func setPresets(_ presets: [AgentPresetItem]) {
+        let sig = presets.map { "\($0.id)|\($0.name)|\($0.provider)|\($0.icon)" }
+        if sig == presetSignature { return }
         self.presets = presets
+        presetSignature = sig
         rebuildButtons()
     }
 

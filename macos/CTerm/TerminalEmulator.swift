@@ -37,6 +37,9 @@ class TerminalEmulator {
     var alternateScreen: Bool = false
     var primaryCells: [[Cell]]?
     var needsDisplay: Bool = false
+    // Dirty-row tracking: -1 means no rows dirty. Inclusive range [dirtyRowTop, dirtyRowBot].
+    private(set) var dirtyRowTop: Int = -1
+    private(set) var dirtyRowBot: Int = -1
     var title: String = "CTerm"
     var onTitleChanged: ((String) -> Void)?
     var onWriteBack: ((String) -> Void)? // For DSR responses
@@ -119,6 +122,33 @@ class TerminalEmulator {
         Array(repeating: Array(repeating: Cell(), count: cols), count: rows)
     }
 
+    private func markDirty(_ row: Int) {
+        if row < 0 || row >= rows { return }
+        if dirtyRowTop == -1 { dirtyRowTop = row; dirtyRowBot = row }
+        else {
+            if row < dirtyRowTop { dirtyRowTop = row }
+            if row > dirtyRowBot { dirtyRowBot = row }
+        }
+    }
+
+    private func markDirtyRange(_ top: Int, _ bot: Int) {
+        markDirty(max(0, top))
+        markDirty(min(rows - 1, bot))
+    }
+
+    private func markAllDirty() {
+        dirtyRowTop = 0
+        dirtyRowBot = rows - 1
+    }
+
+    func consumeDirtyRange() -> (Int, Int)? {
+        guard dirtyRowTop != -1 else { return nil }
+        let r = (dirtyRowTop, dirtyRowBot)
+        dirtyRowTop = -1
+        dirtyRowBot = -1
+        return r
+    }
+
     func resize(newRows: Int, newCols: Int) {
         guard newRows > 0 && newCols > 0 else { return }
 
@@ -139,6 +169,7 @@ class TerminalEmulator {
         cursorCol = min(cursorCol, newCols - 1)
         scrollTop = 0
         scrollBottom = 0
+        markAllDirty()
         needsDisplay = true
     }
 
@@ -372,6 +403,7 @@ class TerminalEmulator {
             for i in 0..<count {
                 cells[cursorRow][cursorCol + i] = Cell()
             }
+            markDirty(cursorRow)
         case 0x60: // ` - HPA
             cursorCol = min(cols - 1, max(0, n - 1))
         case 0x64: // d - VPA
@@ -410,6 +442,7 @@ class TerminalEmulator {
                     cells[cursorRow].removeLast()
                 }
             }
+            markDirty(cursorRow)
         default:
             break
         }
@@ -433,6 +466,7 @@ class TerminalEmulator {
                         alternateScreen = true
                         scrollTop = 0
                         scrollBottom = 0
+                        markAllDirty()
                     }
                 default: break
                 }
@@ -451,6 +485,7 @@ class TerminalEmulator {
                         cursorCol = savedCursorCol
                         scrollTop = 0
                         scrollBottom = 0
+                        markAllDirty()
                     }
                 default: break
                 }
@@ -536,6 +571,7 @@ class TerminalEmulator {
         }
         if cursorRow >= 0 && cursorRow < rows && cursorCol >= 0 && cursorCol < cols {
             cells[cursorRow][cursorCol] = Cell(character: char, attributes: currentAttributes, dirty: true)
+            markDirty(cursorRow)
         }
         cursorCol += 1
     }
@@ -563,6 +599,7 @@ class TerminalEmulator {
         }
         cells.remove(at: top)
         cells.insert(Array(repeating: Cell(), count: cols), at: bottom)
+        markDirtyRange(top, bottom)
     }
 
     private func scrollDown() {
@@ -574,6 +611,7 @@ class TerminalEmulator {
         let bottom = effectiveScrollBottom
         cells.remove(at: bottom)
         cells.insert(Array(repeating: Cell(), count: cols), at: top)
+        markDirtyRange(top, bottom)
     }
 
     private func eraseInDisplay(mode: Int) {
@@ -583,15 +621,18 @@ class TerminalEmulator {
             for r in (cursorRow + 1)..<rows {
                 for c in 0..<cols { cells[r][c] = Cell() }
             }
+            markDirtyRange(cursorRow, rows - 1)
         case 1: // Erase above
             for c in 0...cursorCol { cells[cursorRow][c] = Cell() }
             for r in 0..<cursorRow {
                 for c in 0..<cols { cells[r][c] = Cell() }
             }
+            markDirtyRange(0, cursorRow)
         case 2, 3: // Erase all
             for r in 0..<rows {
                 for c in 0..<cols { cells[r][c] = Cell() }
             }
+            markAllDirty()
         default: break
         }
     }
@@ -604,8 +645,9 @@ class TerminalEmulator {
             for c in 0...min(cursorCol, cols - 1) { cells[cursorRow][c] = Cell() }
         case 2: // Erase line
             for c in 0..<cols { cells[cursorRow][c] = Cell() }
-        default: break
+        default: return
         }
+        markDirty(cursorRow)
     }
 
     private func insertLines(count: Int) {
@@ -613,6 +655,7 @@ class TerminalEmulator {
             cells.insert(Array(repeating: Cell(), count: cols), at: cursorRow)
             cells.removeLast()
         }
+        markDirtyRange(cursorRow, rows - 1)
     }
 
     private func deleteLines(count: Int) {
@@ -620,6 +663,7 @@ class TerminalEmulator {
             cells.remove(at: cursorRow)
             cells.append(Array(repeating: Cell(), count: cols))
         }
+        markDirtyRange(cursorRow, rows - 1)
     }
 
     private func deleteChars(count: Int) {
@@ -628,6 +672,7 @@ class TerminalEmulator {
             cells[cursorRow].remove(at: cursorCol)
             cells[cursorRow].append(Cell())
         }
+        markDirty(cursorRow)
     }
 
     private func resetTerminal() {
@@ -638,5 +683,6 @@ class TerminalEmulator {
         scrollbackBuffer.removeAll()
         showCursor = true
         applicationCursorKeys = false
+        markAllDirty()
     }
 }

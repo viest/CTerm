@@ -13,8 +13,14 @@ class TerminalView: NSView {
     private var cellWidth: CGFloat = 8
     private var cellHeight: CGFloat = 16
     private var displayTimer: Timer?
-    private var cursorBlinkTimer: Timer?
     private var cursorVisible: Bool = true
+    private var cursorBlinkCounter: Int = 0
+    // Cursor cell last drawn — used to invalidate on cursor move.
+    private var lastCursorRow: Int = 0
+    private var lastCursorCol: Int = 0
+    // Cached fonts (rebuilt in calculateCellSize).
+    private var regularFont: NSFont = AppTheme.terminalFont
+    private var boldFont: NSFont = AppTheme.terminalFont
 
     var tokenTracker: TokenTrackerBridge?
     var sessionId: String = UUID().uuidString
@@ -52,19 +58,7 @@ class TerminalView: NSView {
         pty.spawn(command: shell, workingDir: workingDir, size: (24, 80))
 
         displayTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            guard let s = self else { return }
-            if s.emulator.needsDisplay {
-                s.emulator.needsDisplay = false
-                s.setNeedsDisplay(s.bounds)
-            }
-        }
-
-        cursorBlinkTimer = Timer.scheduledTimer(withTimeInterval: 0.6, repeats: true) { [weak self] _ in
-            guard let s = self else { return }
-            s.cursorVisible.toggle()
-            let x = CGFloat(s.emulator.cursorCol) * s.cellWidth
-            let y = CGFloat(s.emulator.cursorRow) * s.cellHeight
-            s.setNeedsDisplay(NSRect(x: x, y: y, width: s.cellWidth, height: s.cellHeight))
+            self?.tick()
         }
     }
 
@@ -72,8 +66,51 @@ class TerminalView: NSView {
 
     deinit {
         displayTimer?.invalidate()
-        cursorBlinkTimer?.invalidate()
         pty.terminate()
+    }
+
+    private func tick() {
+        // Blink cursor every 18 ticks (≈0.6s at 30fps).
+        cursorBlinkCounter += 1
+        var blinkFlipped = false
+        if cursorBlinkCounter >= 18 {
+            cursorBlinkCounter = 0
+            cursorVisible.toggle()
+            blinkFlipped = true
+        }
+
+        var invalidRect: NSRect? = nil
+        let mergeRect: (NSRect) -> Void = { rect in
+            if let r = invalidRect { invalidRect = r.union(rect) } else { invalidRect = rect }
+        }
+
+        if let (top, bot) = emulator.consumeDirtyRange() {
+            let y = CGFloat(top) * cellHeight
+            let h = CGFloat(bot - top + 1) * cellHeight
+            mergeRect(NSRect(x: 0, y: y, width: bounds.width, height: h))
+            emulator.needsDisplay = false
+        } else if emulator.needsDisplay {
+            emulator.needsDisplay = false
+            mergeRect(bounds)
+        }
+
+        // Cursor moved — invalidate old + new cells.
+        if emulator.cursorRow != lastCursorRow || emulator.cursorCol != lastCursorCol {
+            mergeRect(cellRect(row: lastCursorRow, col: lastCursorCol))
+            mergeRect(cellRect(row: emulator.cursorRow, col: emulator.cursorCol))
+            lastCursorRow = emulator.cursorRow
+            lastCursorCol = emulator.cursorCol
+        } else if blinkFlipped {
+            mergeRect(cellRect(row: emulator.cursorRow, col: emulator.cursorCol))
+        }
+
+        if let rect = invalidRect {
+            setNeedsDisplay(rect)
+        }
+    }
+
+    private func cellRect(row: Int, col: Int) -> NSRect {
+        NSRect(x: CGFloat(col) * cellWidth, y: CGFloat(row) * cellHeight, width: cellWidth, height: cellHeight)
     }
 
     private func calculateCellSize() {
@@ -82,6 +119,8 @@ class TerminalView: NSView {
         let size = ("M" as NSString).size(withAttributes: attrs)
         cellWidth = ceil(size.width)
         cellHeight = ceil(font.ascender - font.descender + font.leading) + 2
+        regularFont = font
+        boldFont = NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .bold)
     }
 
     private func calculateGridSize() -> (rows: Int, cols: Int) {
@@ -108,58 +147,94 @@ class TerminalView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let context = NSGraphicsContext.current?.cgContext else { return }
 
-        // Draw background
         context.setFillColor(AppTheme.bgPrimary.cgColor)
-        context.fill(bounds)
+        context.fill(dirtyRect)
 
-        let font = AppTheme.terminalFont
+        let rows = emulator.rows
+        let cols = emulator.cols
+        guard rows > 0 && cols > 0 else { return }
 
-        for row in 0..<emulator.rows {
-            for col in 0..<emulator.cols {
-                let cell = emulator.cells[row][col]
-                let x = CGFloat(col) * cellWidth
-                let y = CGFloat(row) * cellHeight
+        let rowStart = max(0, Int(dirtyRect.minY / cellHeight))
+        let rowEnd = min(rows, Int((dirtyRect.maxY / cellHeight).rounded(.up)))
+        let colStart = max(0, Int(dirtyRect.minX / cellWidth))
+        let colEnd = min(cols, Int((dirtyRect.maxX / cellWidth).rounded(.up)))
+        guard rowStart < rowEnd && colStart < colEnd else { return }
 
-                let effectiveFg = cell.attributes.inverse ? cell.attributes.bg : cell.attributes.fg
-                let effectiveBg = cell.attributes.inverse ? cell.attributes.fg : cell.attributes.bg
+        for row in rowStart..<rowEnd {
+            let rowCells = emulator.cells[row]
+            let y = CGFloat(row) * cellHeight
 
-                // Draw cell background
-                if effectiveBg != .clear {
-                    context.setFillColor(effectiveBg.cgColor)
-                    context.fill(CGRect(x: x, y: y, width: cellWidth, height: cellHeight))
+            // Pass 1: coalesced background fills.
+            var bgCol = colStart
+            while bgCol < colEnd {
+                let cell = rowCells[bgCol]
+                let bg = cell.attributes.inverse ? cell.attributes.fg : cell.attributes.bg
+                if bg == .clear { bgCol += 1; continue }
+                var end = bgCol + 1
+                while end < colEnd {
+                    let c = rowCells[end]
+                    let bg2 = c.attributes.inverse ? c.attributes.fg : c.attributes.bg
+                    if bg2 != bg { break }
+                    end += 1
                 }
+                context.setFillColor(bg.cgColor)
+                context.fill(CGRect(
+                    x: CGFloat(bgCol) * cellWidth, y: y,
+                    width: CGFloat(end - bgCol) * cellWidth, height: cellHeight))
+                bgCol = end
+            }
 
-                // Draw cursor
-                if row == emulator.cursorRow && col == emulator.cursorCol && emulator.showCursor {
-                    if cursorVisible {
-                        context.setFillColor(AppTheme.accent.withAlphaComponent(0.7).cgColor)
-                        context.fill(CGRect(x: x, y: y, width: cellWidth, height: cellHeight))
-                    }
+            // Pass 2: coalesced text runs (same attributes, no spaces).
+            var col = colStart
+            while col < colEnd {
+                let cell = rowCells[col]
+                if cell.character == " " { col += 1; continue }
+                let attrs = cell.attributes
+                var end = col + 1
+                var runString = String(cell.character)
+                while end < colEnd {
+                    let c = rowCells[end]
+                    if c.character == " " || c.attributes != attrs { break }
+                    runString.append(c.character)
+                    end += 1
                 }
+                drawTextRun(runString, at: NSPoint(x: CGFloat(col) * cellWidth, y: y + 1), attrs: attrs)
+                col = end
+            }
+        }
 
-                // Draw character
+        // Cursor overlay.
+        if emulator.showCursor && cursorVisible {
+            let cr = emulator.cursorRow
+            let cc = emulator.cursorCol
+            if cr >= rowStart && cr < rowEnd && cc >= colStart && cc < colEnd {
+                let x = CGFloat(cc) * cellWidth
+                let y = CGFloat(cr) * cellHeight
+                context.setFillColor(AppTheme.accent.withAlphaComponent(0.7).cgColor)
+                context.fill(CGRect(x: x, y: y, width: cellWidth, height: cellHeight))
+                let cell = emulator.cells[cr][cc]
                 if cell.character != " " {
-                    let drawFont = cell.attributes.bold ? NSFont.monospacedSystemFont(ofSize: font.pointSize, weight: .bold) : font
-                    let fg = (row == emulator.cursorRow && col == emulator.cursorCol && cursorVisible) ?
-                        AppTheme.bgPrimary : (effectiveFg == .clear ? AppTheme.textPrimary : effectiveFg)
-
-                    var attrs: [NSAttributedString.Key: Any] = [
-                        .font: drawFont,
-                        .foregroundColor: fg
-                    ]
-                    if cell.attributes.underline {
-                        attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
-                    }
-                    if cell.attributes.strikethrough {
-                        attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
-                    }
-
+                    let drawFont = cell.attributes.bold ? boldFont : regularFont
                     let str = String(cell.character) as NSString
-                    let baseline = y + font.ascender + 1
-                    str.draw(at: NSPoint(x: x, y: baseline - font.ascender), withAttributes: attrs)
+                    str.draw(at: NSPoint(x: x, y: y + 1),
+                             withAttributes: [.font: drawFont, .foregroundColor: AppTheme.bgPrimary])
                 }
             }
         }
+    }
+
+    private func drawTextRun(_ text: String, at point: NSPoint, attrs: CellAttributes) {
+        let drawFont = attrs.bold ? boldFont : regularFont
+        let raw = attrs.inverse ? attrs.bg : attrs.fg
+        let fg: NSColor = (raw == .clear) ? AppTheme.textPrimary : raw
+        var drawAttrs: [NSAttributedString.Key: Any] = [.font: drawFont, .foregroundColor: fg]
+        if attrs.underline {
+            drawAttrs[.underlineStyle] = NSUnderlineStyle.single.rawValue
+        }
+        if attrs.strikethrough {
+            drawAttrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+        }
+        (text as NSString).draw(at: point, withAttributes: drawAttrs)
     }
 
     // MARK: - Keyboard Input

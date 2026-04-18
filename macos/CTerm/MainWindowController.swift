@@ -2251,6 +2251,16 @@ extension MainWindowController: NSWindowDelegate {
         settingsWindow?.close()
         settingsWindow = nil
     }
+
+    func windowDidChangeOcclusionState(_ notification: Notification) {
+        guard let win = notification.object as? NSWindow else { return }
+        if win.occlusionState.contains(.visible) {
+            if performanceMonitorTimer == nil { startPerformanceMonitoring() }
+        } else {
+            performanceMonitorTimer?.invalidate()
+            performanceMonitorTimer = nil
+        }
+    }
 }
 
 // MARK: - TerminalViewDelegate

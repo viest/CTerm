@@ -19,7 +19,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
 
     private var ghosttyApp: ghostty_app_t?
     private(set) var ghosttySurface: ghostty_surface_t?
-    private var tickTimer: Timer?
+    private static var tickTimer: Timer?
+    private static var tickObserversInstalled = false
     private var lastSurfaceSizePx: (width: UInt32, height: UInt32)?
 
     // For NSTextInputClient / IME
@@ -388,6 +389,30 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         ghostty_app_tick(app)
     }
 
+    private static func startTickIfNeeded() {
+        if tickTimer != nil { return }
+        tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60, repeats: true) { _ in
+            tickAll()
+        }
+    }
+
+    private static func stopTick() {
+        tickTimer?.invalidate()
+        tickTimer = nil
+    }
+
+    private static func installTickObserversIfNeeded() {
+        guard !tickObserversInstalled else { return }
+        tickObserversInstalled = true
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: NSApplication.didResignActiveNotification, object: nil, queue: .main) { _ in
+            stopTick()
+        }
+        nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+            startTickIfNeeded()
+        }
+    }
+
     // MARK: - Init
 
     init(
@@ -408,11 +433,8 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
         guard let app = Self.ensureApp() else { return }
         self.ghosttyApp = app
 
-        if tickTimer == nil {
-            tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0/60, repeats: true) { _ in
-                GhosttyTerminalView.tickAll()
-            }
-        }
+        Self.installTickObserversIfNeeded()
+        Self.startTickIfNeeded()
 
         DispatchQueue.main.async { [weak self] in
             self?.createSurface(command: command, workingDir: workingDir, initialInput: initialInput)
@@ -550,7 +572,6 @@ class GhosttyTerminalView: NSView, NSTextInputClient {
     }
 
     deinit {
-        tickTimer?.invalidate()
         if let s = ghosttySurface { ghostty_surface_free(s) }
     }
 

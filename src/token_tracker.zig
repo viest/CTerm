@@ -41,37 +41,57 @@ pub const TokenTracker = struct {
     entries: std.ArrayList(TokenEntry),
     storage_path: []const u8,
     allocator: std.mem.Allocator,
+    session_cache: std.StringHashMap(TokenSummary),
 
     pub fn init(allocator: std.mem.Allocator, storage_path: []const u8) !TokenTracker {
         return .{
             .entries = .empty,
             .storage_path = try allocator.dupe(u8, storage_path),
             .allocator = allocator,
+            .session_cache = std.StringHashMap(TokenSummary).init(allocator),
         };
     }
 
     pub fn deinit(self: *TokenTracker) void {
+        var it = self.session_cache.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.session_cache.deinit();
         self.entries.deinit(self.allocator);
         self.allocator.free(self.storage_path);
     }
 
+    fn addToCache(self: *TokenTracker, entry: *const TokenEntry) !void {
+        const sid = entry.getSessionId();
+        if (self.session_cache.getPtr(sid)) |summary| {
+            summary.total_input_tokens += entry.input_tokens;
+            summary.total_output_tokens += entry.output_tokens;
+            summary.total_cache_read_tokens += entry.cache_read_tokens;
+            summary.total_cache_write_tokens += entry.cache_write_tokens;
+            summary.total_cost_usd += entry.cost_usd;
+            summary.entry_count += 1;
+            return;
+        }
+        const key_copy = try self.allocator.dupe(u8, sid);
+        errdefer self.allocator.free(key_copy);
+        try self.session_cache.put(key_copy, .{
+            .total_input_tokens = entry.input_tokens,
+            .total_output_tokens = entry.output_tokens,
+            .total_cache_read_tokens = entry.cache_read_tokens,
+            .total_cache_write_tokens = entry.cache_write_tokens,
+            .total_cost_usd = entry.cost_usd,
+            .entry_count = 1,
+        });
+    }
+
     pub fn record(self: *TokenTracker, entry: *const TokenEntry) !void {
         try self.entries.append(self.allocator, entry.*);
+        try self.addToCache(entry);
     }
 
     pub fn getSessionSummary(self: *const TokenTracker, session_id: []const u8) TokenSummary {
-        var summary = TokenSummary{};
-        for (self.entries.items) |e| {
-            if (std.mem.eql(u8, e.getSessionId(), session_id)) {
-                summary.total_input_tokens += e.input_tokens;
-                summary.total_output_tokens += e.output_tokens;
-                summary.total_cache_read_tokens += e.cache_read_tokens;
-                summary.total_cache_write_tokens += e.cache_write_tokens;
-                summary.total_cost_usd += e.cost_usd;
-                summary.entry_count += 1;
-            }
-        }
-        return summary;
+        return self.session_cache.get(session_id) orelse TokenSummary{};
     }
 
     pub fn getTotalSummary(self: *const TokenTracker) TokenSummary {
@@ -153,6 +173,7 @@ pub const TokenTracker = struct {
 
             if (field_idx >= 2) {
                 try self.entries.append(self.allocator, entry);
+                try self.addToCache(&entry);
             }
         }
     }
