@@ -735,7 +735,7 @@ final class UsageMonitor {
         guard let contents = try? String(contentsOf: file, encoding: .utf8) else {
             return []
         }
-        return contents.split(whereSeparator: \.isNewline).map(String.init)
+        return contents.components(separatedBy: "\n")
     }
 
     private func saveCachedSnapshots(_ snapshots: [String: ProviderMonitorSnapshot]) {
