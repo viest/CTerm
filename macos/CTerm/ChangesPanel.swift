@@ -13,10 +13,15 @@ class ChangesPanel: NSView {
         let staged: [FileChange]
         let unstaged: [FileChange]
         let hasRemote: Bool
+        let ahead: Int
+        let behind: Int
     }
+
+    private enum SyncAction { case publish, push, pull }
 
     private var stagedChanges: [FileChange] = []
     private var unstagedChanges: [FileChange] = []
+    private var syncAction: SyncAction = .publish
 
     // Commit area (top)
     private var commitTextView: NSTextView!
@@ -232,7 +237,9 @@ class ChangesPanel: NSView {
             let snapshot = self?.parseGitStatus(at: path) ?? GitStatusSnapshot(
                 staged: [],
                 unstaged: [],
-                hasRemote: false
+                hasRemote: false,
+                ahead: 0,
+                behind: 0
             )
 
             DispatchQueue.main.async {
@@ -243,7 +250,7 @@ class ChangesPanel: NSView {
                 if self.currentProjectPath == path {
                     self.stagedChanges = snapshot.staged
                     self.unstagedChanges = snapshot.unstaged
-                    self.pushButton.title = snapshot.hasRemote ? "  \u{2191}  Push" : "  \u{2191}  Publish Branch"
+                    self.applySyncState(snapshot)
                     self.rebuildFileList()
                 }
 
@@ -268,6 +275,8 @@ class ChangesPanel: NSView {
         let output = runGit(["status", "--porcelain=1", "--branch"], at: path)
         var lines = output.split(separator: "\n")
         var hasRemote = false
+        var ahead = 0
+        var behind = 0
 
         if let firstLine = lines.first, firstLine.hasPrefix("## ") {
             lines.removeFirst()
@@ -275,6 +284,19 @@ class ChangesPanel: NSView {
             let branchToken = branchInfo.split(separator: " ").first.map(String.init) ?? branchInfo
             if branchToken.range(of: "...") != nil {
                 hasRemote = true
+                if let lb = branchInfo.firstIndex(of: "["), let rb = branchInfo.firstIndex(of: "]"), lb < rb {
+                    let body = branchInfo[branchInfo.index(after: lb)..<rb]
+                    for part in body.split(separator: ",") {
+                        let t = part.trimmingCharacters(in: .whitespaces)
+                        if t.hasPrefix("ahead ") {
+                            ahead = Int(t.dropFirst(6)) ?? 0
+                        } else if t.hasPrefix("behind ") {
+                            behind = Int(t.dropFirst(7)) ?? 0
+                        } else if t == "gone" {
+                            hasRemote = false
+                        }
+                    }
+                }
             }
         }
 
@@ -329,7 +351,7 @@ class ChangesPanel: NSView {
             }
         }
 
-        return GitStatusSnapshot(staged: staged, unstaged: unstaged, hasRemote: hasRemote)
+        return GitStatusSnapshot(staged: staged, unstaged: unstaged, hasRemote: hasRemote, ahead: ahead, behind: behind)
     }
 
     private func loadNumstat(_ baseArgs: [String], paths: Set<String>, at path: String) -> [String: (Int, Int)] {
@@ -489,22 +511,47 @@ class ChangesPanel: NSView {
         }
     }
 
+    private func applySyncState(_ snapshot: GitStatusSnapshot) {
+        if !snapshot.hasRemote {
+            syncAction = .publish
+            pushButton.title = "  \u{2191}  Publish Branch"
+        } else if snapshot.behind > 0 && snapshot.ahead == 0 {
+            syncAction = .pull
+            pushButton.title = "  \u{2193}  Pull \(snapshot.behind)"
+        } else {
+            syncAction = .push
+            if snapshot.ahead > 0 && snapshot.behind > 0 {
+                pushButton.title = "  \u{2191}  Push \(snapshot.ahead) \u{2193} \(snapshot.behind)"
+            } else if snapshot.ahead > 0 {
+                pushButton.title = "  \u{2191}  Push \(snapshot.ahead)"
+            } else {
+                pushButton.title = "  \u{2191}  Push"
+            }
+        }
+    }
+
     @objc private func pushClicked() {
-        // If has commit message, commit first then push
         let msg = commitTextView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let path = currentProjectPath else { return }
+        let action = syncAction
 
         DispatchQueue.global().async { [weak self] in
-            if !msg.isEmpty && !(self?.stagedChanges.isEmpty ?? true) {
-                _ = self?.runGit(["commit", "-m", msg], at: path)
+            guard let self else { return }
+            switch action {
+            case .pull:
+                _ = self.runGit(["pull", "--ff-only"], at: path)
+            case .push, .publish:
+                if !msg.isEmpty && !self.stagedChanges.isEmpty {
+                    _ = self.runGit(["commit", "-m", msg], at: path)
+                }
+                let br = self.runGit(["rev-parse", "--abbrev-ref", "HEAD"], at: path)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                _ = self.runGit(["push", "-u", "origin", br], at: path)
             }
-            let br = self?.runGit(["rev-parse", "--abbrev-ref", "HEAD"], at: path)
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            _ = self?.runGit(["push", "-u", "origin", br], at: path)
             DispatchQueue.main.async {
-                self?.onGitRepositoryMutated?()
-                self?.commitTextView.string = ""
-                self?.refreshChanges()
+                self.onGitRepositoryMutated?()
+                if action != .pull { self.commitTextView.string = "" }
+                self.refreshChanges()
             }
         }
     }
