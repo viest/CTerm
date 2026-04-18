@@ -80,3 +80,14 @@ Recent commits often use short imperative titles such as `Add dev watch workflow
 
 ## Architecture Notes
 This project uses a three-layer structure: AppKit UI, Ghostty rendering layer, and Zig core library. When handling PTY and Ghostty integration, pay special attention to the following: sizes must use backing pixels, and child-process logic after `fork()` must be limited to POSIX/C code.
+
+## AppKit UI Conventions
+
+These patterns are already in the codebase. New UI work must match them; do not invent parallel styles.
+
+- **Pill-style toolbar buttons** (anything living in `PresetBarView` or a similar bar): height 22pt, corner radius 5, horizontal padding 6pt, icon tile 12pt with 4pt gap to the label, label font `systemFont(ofSize: 11, weight: .medium)`. Default background is transparent; hover — when wanted — tints with `NSColor(white: 0.3, alpha: 0.3)` (see `TerminalPillButton`) or a brand color at 0.15 alpha (see `AgentPillButton`). `mouseDown` should apply `layer.opacity = 0.75` for press feedback. Do not use solid filled pills or custom rounded-rect draws that diverge from these two reference classes.
+- **Toolbar vertical dividers**: 1pt wide, 16pt tall, color `NSColor(white: 0.25, alpha: 1)`, flanked by 8pt spacing on both sides. See the dividers around `sidebarToggle` / `settingsButton` in `PresetBarView.setupUI`.
+- **NSMenu density**: the default NSMenu font (14pt) is too large for our chrome. Every context menu we build must set `menu.font = NSFont.systemFont(ofSize: 12)` before adding items.
+- **NSMenu popup anchoring**: `PresetBarView` and most AppKit subviews here use non-flipped coordinates, so `(0, 0)` is the view's bottom-left. To drop a menu directly below a source view, use `menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: sourceView)`. `NSMenu.popUpContextMenu(_:with:for:)` is fine for right-click menus driven by an event.
+- **Editor-open integration**: all "open in editor" flows must resolve the editor via `EditorLauncher.resolvedEditor(for: project)` (project override → global default → `"code"`) and launch via `EditorLauncher.open(path:editor:line:)`. The editor catalog is centralized in `EditorLauncher.catalog` (with `EditorDefinition.accentColor` / `badgeLetter` for UI). Do not hardcode editor lists, per-IDE CLI arguments, or bundle IDs anywhere else. Per-project overrides live in `ProjectItem.editor` (empty string means "use global").
+- **SourceKit noise**: this project builds with raw `swiftc` in the Makefile, not Xcode, so SourceKit has no module index and will flag many "Cannot find type" diagnostics that are false positives. Authoritative validation is `make swift` (and `make app` for the full bundle). Do not chase SourceKit-only errors.

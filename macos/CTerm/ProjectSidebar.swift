@@ -3,6 +3,7 @@ import AppKit
 protocol ProjectSidebarDelegate: AnyObject {
     func projectLocalSelected(_ project: ProjectItem)
     func projectOpenInEditor(_ project: ProjectItem)
+    func projectSetDefaultEditor(_ project: ProjectItem, editorId: String)
     func projectRemoved(_ project: ProjectItem)
     func addProjectRequested()
     func newWorkspaceRequested()
@@ -261,6 +262,9 @@ class ProjectSidebar: NSView {
             row.onOpenInEditor = { [weak self] project in
                 self?.delegate?.projectOpenInEditor(project)
             }
+            row.onSetDefaultEditor = { [weak self] project, editorId in
+                self?.delegate?.projectSetDefaultEditor(project, editorId: editorId)
+            }
             row.onDelete = { [weak self] project in
                 self?.delegate?.projectRemoved(project)
             }
@@ -368,6 +372,7 @@ private class ProjectGroupRow: NSView {
     var onAdd: ((Int) -> Void)?
     var onOpen: ((ProjectItem) -> Void)?
     var onOpenInEditor: ((ProjectItem) -> Void)?
+    var onSetDefaultEditor: ((ProjectItem, String) -> Void)?
     var onDelete: ((ProjectItem) -> Void)?
     private let project: ProjectItem
     private let index: Int
@@ -432,14 +437,24 @@ private class ProjectGroupRow: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
 
         let openItem = NSMenuItem(title: "Open Terminal", action: #selector(contextOpen), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)
 
-        let editorItem = NSMenuItem(title: "Open in Editor", action: #selector(contextOpenInEditor), keyEquivalent: "")
+        let resolvedEditor = EditorLauncher.resolvedEditor(for: project)
+        let editorItem = NSMenuItem(
+            title: "Open in \(EditorLauncher.displayName(for: resolvedEditor))",
+            action: #selector(contextOpenInEditor),
+            keyEquivalent: ""
+        )
         editorItem.target = self
         menu.addItem(editorItem)
+
+        let pickerItem = NSMenuItem(title: "Default Editor", action: nil, keyEquivalent: "")
+        pickerItem.submenu = buildDefaultEditorMenu()
+        menu.addItem(pickerItem)
 
         menu.addItem(.separator())
 
@@ -450,9 +465,41 @@ private class ProjectGroupRow: NSView {
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
 
+    private func buildDefaultEditorMenu() -> NSMenu {
+        let submenu = NSMenu()
+        submenu.font = NSFont.systemFont(ofSize: 12)
+        let globalId = SettingsManager.shared.settings.defaultEditor
+        let globalName = EditorLauncher.displayName(for: globalId)
+
+        let useGlobal = NSMenuItem(
+            title: "Use Global Default (\(globalName))",
+            action: #selector(clearDefaultEditor),
+            keyEquivalent: ""
+        )
+        useGlobal.target = self
+        useGlobal.state = project.editor.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .on : .off
+        submenu.addItem(useGlobal)
+        submenu.addItem(.separator())
+
+        let overrideId = project.editor.trimmingCharacters(in: .whitespacesAndNewlines)
+        for def in EditorLauncher.installedEditors() {
+            let item = NSMenuItem(title: def.displayName, action: #selector(setDefaultEditor(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = def.id
+            item.state = (def.id == overrideId) ? .on : .off
+            submenu.addItem(item)
+        }
+        return submenu
+    }
+
     @objc private func contextOpen() { onOpen?(project) }
     @objc private func contextOpenInEditor() { onOpenInEditor?(project) }
     @objc private func contextDelete() { onDelete?(project) }
+    @objc private func clearDefaultEditor() { onSetDefaultEditor?(project, "") }
+    @objc private func setDefaultEditor(_ sender: NSMenuItem) {
+        let id = sender.representedObject as? String ?? ""
+        onSetDefaultEditor?(project, id)
+    }
 
     private func drawPlusIcon(center: NSPoint, color: NSColor) {
         let path = NSBezierPath()
@@ -768,6 +815,7 @@ private class WorkspaceWorktreeRow: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
         let openItem = NSMenuItem(title: "Open Terminal", action: #selector(contextOpen), keyEquivalent: "")
         openItem.target = self
         menu.addItem(openItem)

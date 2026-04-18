@@ -32,6 +32,7 @@ class ChangesPanel: NSView {
     private var refreshInFlight = false
     private var needsRefresh = false
     var onGitRepositoryMutated: (() -> Void)?
+    var currentProject: ProjectItem?
 
     var currentProjectPath: String? {
         didSet {
@@ -413,6 +414,7 @@ class ChangesPanel: NSView {
             for change in dirs[dir]! {
                 let row = ChangeFileRow(change: change, indent: 24)
                 row.onStageToggle = { [weak self] c in self?.toggleStage(c) }
+                row.onOpenInEditor = { [weak self] c in self?.openChangeInEditor(c) }
                 fileStackView.addArrangedSubview(row)
                 row.widthAnchor.constraint(equalTo: fileStackView.widthAnchor).isActive = true
             }
@@ -421,9 +423,16 @@ class ChangesPanel: NSView {
         for change in rootFiles {
             let row = ChangeFileRow(change: change, indent: 8)
             row.onStageToggle = { [weak self] c in self?.toggleStage(c) }
+            row.onOpenInEditor = { [weak self] c in self?.openChangeInEditor(c) }
             fileStackView.addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: fileStackView.widthAnchor).isActive = true
         }
+    }
+
+    private func openChangeInEditor(_ change: FileChange) {
+        guard let path = currentProjectPath else { return }
+        let abs = (path as NSString).appendingPathComponent(change.filePath)
+        EditorLauncher.open(path: abs, editor: EditorLauncher.resolvedEditor(for: currentProject))
     }
 
     private func makeDirRow(_ name: String) -> NSView {
@@ -567,8 +576,10 @@ private class SectionHeaderRow: NSView {
 
 private class ChangeFileRow: NSView {
     var onStageToggle: ((FileChange) -> Void)?
+    var onOpenInEditor: ((FileChange) -> Void)?
     private let change: FileChange
     private let indent: CGFloat
+    private let iconHitWidth: CGFloat = 16
     private var isHovered = false
     private var trackingArea: NSTrackingArea?
 
@@ -594,7 +605,12 @@ private class ChangeFileRow: NSView {
     override func mouseExited(with event: NSEvent) { isHovered = false; needsDisplay = true }
 
     override func mouseDown(with event: NSEvent) {
-        onStageToggle?(change)
+        let point = convert(event.locationInWindow, from: nil)
+        if point.x <= indent + iconHitWidth {
+            onStageToggle?(change)
+        } else {
+            onOpenInEditor?(change)
+        }
     }
 
     override func draw(_ dirtyRect: NSRect) {

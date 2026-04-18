@@ -5,6 +5,8 @@ protocol PresetBarDelegate: AnyObject {
     func presetRunInCurrent(_ preset: AgentPresetItem)
     func presetOpenInSplit(_ preset: AgentPresetItem)
     func newTerminalRequested()
+    func presetBarOpenInEditorRequested()
+    func presetBarOpenInEditorPickerRequested(from sourceView: NSView)
 }
 
 class PresetBarView: NSView {
@@ -18,6 +20,7 @@ class PresetBarView: NSView {
     private(set) var sidebarToggle: NSButton!
     private(set) var settingsButton: NSButton!
     private(set) var rightSidebarToggle: NSButton!
+    private(set) var openInEditorButton: OpenInEditorSplitButton!
     private var sidebarLeadingConstraint: NSLayoutConstraint!
 
     private let barHeight: CGFloat = 34
@@ -63,6 +66,25 @@ class PresetBarView: NSView {
         settingsButton.imageScaling = .scaleProportionallyDown
         settingsButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(settingsButton)
+
+        // Open-in-editor split button (sits to the left of the right-sidebar toggle)
+        openInEditorButton = OpenInEditorSplitButton()
+        openInEditorButton.translatesAutoresizingMaskIntoConstraints = false
+        openInEditorButton.onOpen = { [weak self] in
+            self?.delegate?.presetBarOpenInEditorRequested()
+        }
+        openInEditorButton.onChevron = { [weak self] in
+            guard let self else { return }
+            self.delegate?.presetBarOpenInEditorPickerRequested(from: self.openInEditorButton)
+        }
+        addSubview(openInEditorButton)
+
+        // Divider between the Open button and the right-sidebar toggle.
+        let divider3 = NSView()
+        divider3.wantsLayer = true
+        divider3.layer?.backgroundColor = NSColor(white: 0.25, alpha: 1).cgColor
+        divider3.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(divider3)
 
         // Right sidebar toggle button
         rightSidebarToggle = NSButton()
@@ -112,7 +134,15 @@ class PresetBarView: NSView {
             divider2.heightAnchor.constraint(equalToConstant: 16),
 
             contentView.leadingAnchor.constraint(equalTo: divider2.trailingAnchor, constant: 8),
-            contentView.trailingAnchor.constraint(equalTo: rightSidebarToggle.leadingAnchor, constant: -14),
+            contentView.trailingAnchor.constraint(equalTo: openInEditorButton.leadingAnchor, constant: -10),
+
+            openInEditorButton.trailingAnchor.constraint(equalTo: divider3.leadingAnchor, constant: -8),
+            openInEditorButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            divider3.trailingAnchor.constraint(equalTo: rightSidebarToggle.leadingAnchor, constant: -8),
+            divider3.centerYAnchor.constraint(equalTo: centerYAnchor),
+            divider3.widthAnchor.constraint(equalToConstant: 1),
+            divider3.heightAnchor.constraint(equalToConstant: 16),
 
             rightSidebarToggle.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
             rightSidebarToggle.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -138,6 +168,10 @@ class PresetBarView: NSView {
         sidebarLeadingConstraint.constant = showsTrafficLights
             ? Self.leadingInsetWithTrafficLights
             : Self.leadingInsetWithoutTrafficLights
+    }
+
+    func setOpenInEditor(_ editorId: String) {
+        openInEditorButton.setEditor(editorId)
     }
 
     private func rebuildButtons() {
@@ -189,6 +223,7 @@ class PresetBarView: NSView {
         let preset = presets[sender.index]
 
         let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
         menu.autoenablesItems = false
 
         let header = NSMenuItem()
@@ -562,5 +597,104 @@ class TerminalPillButton: NSControl {
         let textX = iconX + iconSize + iconTextGap
         let textY = (bounds.height - strSize.height) / 2
         str.draw(at: NSPoint(x: textX, y: textY), withAttributes: attrs)
+    }
+}
+
+// MARK: - Open-in-editor split button
+
+/// Split-pill button: IDE name on the left, chevron on the right.
+/// Static styling — no hover or press effects.
+class OpenInEditorSplitButton: NSView {
+    var onOpen: (() -> Void)?
+    var onChevron: (() -> Void)?
+
+    private var editorId: String = "code"
+    private var pressedOnLeft = false
+    private var pressedOnRight = false
+
+    private let totalHeight: CGFloat = 22
+    private let hPad: CGFloat = 8
+    private let chevronWidth: CGFloat = 18
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        layer?.cornerRadius = 5
+        layer?.masksToBounds = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func setEditor(_ id: String) {
+        let normalized = id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = normalized.isEmpty ? "code" : normalized
+        guard editorId != resolved else { return }
+        editorId = resolved
+        invalidateIntrinsicContentSize()
+        needsDisplay = true
+    }
+
+    private var currentLabel: String {
+        EditorLauncher.displayName(for: editorId)
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let font = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let textW = (currentLabel as NSString).size(withAttributes: [.font: font]).width
+        let leftW = hPad + textW + hPad
+        return NSSize(width: ceil(leftW + chevronWidth), height: totalHeight)
+    }
+
+    private var splitX: CGFloat { bounds.width - chevronWidth }
+
+    override func mouseDown(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        pressedOnLeft = p.x < splitX
+        pressedOnRight = !pressedOnLeft
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let p = convert(event.locationInWindow, from: nil)
+        let wasLeft = pressedOnLeft
+        let wasRight = pressedOnRight
+        pressedOnLeft = false
+        pressedOnRight = false
+        guard bounds.contains(p) else { return }
+        let upOnLeft = p.x < splitX
+        if wasLeft && upOnLeft { onOpen?() }
+        else if wasRight && !upOnLeft { onChevron?() }
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+
+        // IDE-name label
+        let labelFont = NSFont.systemFont(ofSize: 11, weight: .medium)
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: labelFont,
+            .foregroundColor: AppTheme.textPrimary,
+        ]
+        let label = currentLabel as NSString
+        let labelSize = label.size(withAttributes: labelAttrs)
+        label.draw(
+            at: NSPoint(
+                x: hPad,
+                y: (bounds.height - labelSize.height) / 2
+            ),
+            withAttributes: labelAttrs
+        )
+
+        // Chevron
+        let cy = bounds.midY
+        let cx = splitX + chevronWidth / 2
+        let chev = NSBezierPath()
+        chev.lineWidth = 1.2
+        chev.lineCapStyle = .round
+        chev.lineJoinStyle = .round
+        chev.move(to: NSPoint(x: cx - 3, y: cy + 1.8))
+        chev.line(to: NSPoint(x: cx,     y: cy - 1.8))
+        chev.line(to: NSPoint(x: cx + 3, y: cy + 1.8))
+        AppTheme.textSecondary.setStroke()
+        chev.stroke()
     }
 }

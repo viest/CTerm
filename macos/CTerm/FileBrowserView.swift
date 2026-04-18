@@ -14,13 +14,13 @@ class FileNode: NSObject {
     }
 }
 
-class FileBrowserView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate {
+class FileBrowserView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
     private var outlineView: NSOutlineView!
     private var searchField: NSTextField!
     private var rootNodes: [FileNode] = []
     private var filteredNodes: [FileNode] = []
     private var gitStatusMap: [String: GitChange.ChangeStatus] = [:]
-    private var editor: String = "code"
+    var currentProject: ProjectItem?
     private var isFiltering = false
     private var reloadInFlight = false
     private var needsReload = false
@@ -108,6 +108,10 @@ class FileBrowserView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, N
         outlineView.doubleAction = #selector(doubleClicked)
 
         let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
+        menu.delegate = self
+        menu.addItem(withTitle: "Open in Editor", action: #selector(openInEditor), keyEquivalent: "")
+        menu.addItem(.separator())
         menu.addItem(withTitle: "Reveal in Finder", action: #selector(revealInFinder), keyEquivalent: "")
         menu.addItem(withTitle: "Copy Path", action: #selector(copyPath), keyEquivalent: "")
         menu.addItem(withTitle: "Open in Terminal", action: #selector(openInTerminal), keyEquivalent: "")
@@ -305,7 +309,20 @@ class FileBrowserView: NSView, NSOutlineViewDataSource, NSOutlineViewDelegate, N
 
     @objc private func doubleClicked() {
         guard let node = selectedNode(), !node.isDirectory else { return }
-        EditorLauncher.open(path: node.path, editor: editor)
+        EditorLauncher.open(path: node.path, editor: EditorLauncher.resolvedEditor(for: currentProject))
+    }
+
+    @objc private func openInEditor() {
+        guard let node = selectedNode() else { return }
+        EditorLauncher.open(path: node.path, editor: EditorLauncher.resolvedEditor(for: currentProject))
+    }
+
+    // MARK: - NSMenuDelegate
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard let first = menu.items.first, first.action == #selector(openInEditor) else { return }
+        let editorName = EditorLauncher.displayName(for: EditorLauncher.resolvedEditor(for: currentProject))
+        first.title = "Open in \(editorName)"
     }
 
     @objc private func revealInFinder() {

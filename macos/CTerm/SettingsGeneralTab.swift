@@ -93,12 +93,9 @@ class SettingsGeneralTab: NSView {
 
         editorPopup = NSPopUpButton()
         editorPopup.font = NSFont.systemFont(ofSize: 12)
-        let editors = [
-            ("VS Code", "code"), ("Cursor", "cursor"), ("Xcode", "xcode"),
-            ("Sublime Text", "subl"), ("JetBrains", "idea"), ("Vim", "vim"),
-        ]
-        for (name, _) in editors { editorPopup.addItem(withTitle: name) }
-        if let idx = editors.firstIndex(where: { $0.1 == settings.settings.defaultEditor }) {
+        let editors = EditorLauncher.installedEditors()
+        for def in editors { editorPopup.addItem(withTitle: def.displayName) }
+        if let idx = editors.firstIndex(where: { $0.id == settings.settings.defaultEditor }) {
             editorPopup.selectItem(at: idx)
         }
         editorPopup.target = self
@@ -141,11 +138,11 @@ class SettingsGeneralTab: NSView {
     }
 
     @objc private func editorChanged() {
-        let editorMap = ["VS Code": "code", "Cursor": "cursor", "Xcode": "xcode",
-                         "Sublime Text": "subl", "JetBrains": "idea", "Vim": "vim"]
-        let selected = editorPopup.selectedItem?.title ?? "VS Code"
-        settings.settings.defaultEditor = editorMap[selected] ?? "code"
-        settings.save()
+        let title = editorPopup.selectedItem?.title ?? ""
+        if let def = EditorLauncher.catalog.first(where: { $0.displayName == title }) {
+            settings.settings.defaultEditor = def.id
+            settings.save()
+        }
     }
 
     @objc private func agentAutoRunChanged(_ sender: NSSwitch) {

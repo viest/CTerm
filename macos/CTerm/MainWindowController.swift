@@ -207,7 +207,10 @@ class MainWindowController: NSWindowController {
     private func observeSettingsChanges() {
         applyTerminalSettingsToAllPanes()
         SettingsManager.shared.onSettingsChanged = { [weak self] in
-            self?.applyTerminalSettingsToAllPanes()
+            guard let self else { return }
+            self.applyTerminalSettingsToAllPanes()
+            // Global default editor can change here; keep the Open button in sync.
+            self.presetBar.setOpenInEditor(EditorLauncher.resolvedEditor(for: self.currentProject))
         }
     }
 
@@ -1911,8 +1914,8 @@ class MainWindowController: NSWindowController {
 
     @objc func openInEditor(_ sender: Any?) {
         let path = currentProject?.path ?? NSHomeDirectory()
-        let editor = SettingsManager.shared.settings.defaultEditor
-        EditorLauncher.open(path: path, editor: editor)
+        EditorLauncher.open(path: path,
+                            editor: EditorLauncher.resolvedEditor(for: currentProject))
     }
 
     @objc func copyWorkspacePath(_ sender: Any?) {
@@ -1931,7 +1934,7 @@ class MainWindowController: NSWindowController {
     @objc func showQuickOpen(_ sender: Any?) {
         guard let window = window else { return }
         let path = currentProject?.path ?? NSHomeDirectory()
-        let editor = SettingsManager.shared.settings.defaultEditor
+        let editor = EditorLauncher.resolvedEditor(for: currentProject)
         let panel = QuickOpenPanel()
         panel.show(relativeTo: window, projectPath: path, editor: editor)
         quickOpenPanel = panel
@@ -1939,7 +1942,7 @@ class MainWindowController: NSWindowController {
 
     @objc func showSearch(_ sender: Any?) {
         guard let window = window else { return }
-        let editor = SettingsManager.shared.settings.defaultEditor
+        let editor = EditorLauncher.resolvedEditor(for: currentProject)
 
         // Collect all search paths: project + workspaces
         var paths: [(name: String, path: String)] = []
@@ -2346,9 +2349,13 @@ extension MainWindowController: ProjectSidebarDelegate {
 
     private func syncRightSidebarProjectContext(forceRefresh: Bool = false) {
         let path = resolvedRightSidebarPath()
+        let owningProject = projectContaining(path: path) ?? currentProject
+        changesPanel.currentProject = owningProject
         changesPanel.currentProjectPath = path
+        fileBrowser.currentProject = owningProject
         fileBrowser.projectPath = path
         portManager.workingDirectory = path
+        presetBar.setOpenInEditor(EditorLauncher.resolvedEditor(for: owningProject))
 
         guard rightSidebarVisible else { return }
 
@@ -2370,8 +2377,20 @@ extension MainWindowController: ProjectSidebarDelegate {
     }
 
     func projectOpenInEditor(_ project: ProjectItem) {
-        let editor = project.editor.isEmpty ? "code" : project.editor
-        EditorLauncher.open(path: project.path, editor: editor)
+        EditorLauncher.open(path: project.path,
+                            editor: EditorLauncher.resolvedEditor(for: project))
+    }
+
+    func projectSetDefaultEditor(_ project: ProjectItem, editorId: String) {
+        guard let idx = projects.firstIndex(where: { $0.id == project.id }) else { return }
+        let normalized = editorId.trimmingCharacters(in: .whitespacesAndNewlines)
+        projects[idx].editor = normalized
+        saveProjects()
+        if currentProject?.id == project.id {
+            currentProject?.editor = normalized
+            syncRightSidebarProjectContext()
+        }
+        projectSidebar.setProjects(projects)
     }
 
     func projectRemoved(_ project: ProjectItem) {
@@ -2468,8 +2487,8 @@ extension MainWindowController: ProjectSidebarDelegate {
 
     func workspaceOpenInEditor(_ workspace: WorkspaceItem) {
         let project = projects.first { $0.id == workspace.projectId }
-        let editor = project?.editor.isEmpty == false ? project!.editor : "code"
-        EditorLauncher.open(path: workspace.worktreePath, editor: editor)
+        EditorLauncher.open(path: workspace.worktreePath,
+                            editor: EditorLauncher.resolvedEditor(for: project))
     }
 }
 
@@ -2522,5 +2541,72 @@ extension MainWindowController: PresetBarDelegate {
         trackPaneForActiveWorkspace(newId)
         rebuildCurrentTabContainer()
         statusBar.updateProvider(preset.provider)
+    }
+
+    func presetBarOpenInEditorRequested() {
+        let path = resolvedRightSidebarPath()
+        let owningProject = projectContaining(path: path) ?? currentProject
+        guard let targetPath = path ?? owningProject?.path, !targetPath.isEmpty else {
+            NSSound.beep()
+            return
+        }
+        EditorLauncher.open(
+            path: targetPath,
+            editor: EditorLauncher.resolvedEditor(for: owningProject)
+        )
+    }
+
+    func presetBarOpenInEditorPickerRequested(from sourceView: NSView) {
+        let path = resolvedRightSidebarPath()
+        let targetProject = projectContaining(path: path) ?? currentProject
+        guard let project = targetProject else { return }
+
+        let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
+        let overrideId = project.editor.trimmingCharacters(in: .whitespacesAndNewlines)
+        let globalId = SettingsManager.shared.settings.defaultEditor
+        let globalName = EditorLauncher.displayName(for: globalId)
+
+        let useGlobal = NSMenuItem(
+            title: "Use Global Default (\(globalName))",
+            action: #selector(openButtonUseGlobalEditor(_:)),
+            keyEquivalent: ""
+        )
+        useGlobal.target = self
+        useGlobal.representedObject = project.id
+        useGlobal.state = overrideId.isEmpty ? .on : .off
+        menu.addItem(useGlobal)
+        menu.addItem(.separator())
+
+        for def in EditorLauncher.installedEditors() {
+            let item = NSMenuItem(
+                title: def.displayName,
+                action: #selector(openButtonSelectEditor(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = [project.id, def.id] as [Any]
+            item.state = (def.id == overrideId) ? .on : .off
+            menu.addItem(item)
+        }
+
+        // Non-flipped NSView coords: (0, 0) is the view's bottom-left, so
+        // anchoring the menu's top-left there drops it directly below the button.
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: 0), in: sourceView)
+    }
+
+    @objc private func openButtonUseGlobalEditor(_ sender: NSMenuItem) {
+        guard let projectId = sender.representedObject as? UUID,
+              let project = projects.first(where: { $0.id == projectId }) else { return }
+        projectSetDefaultEditor(project, editorId: "")
+    }
+
+    @objc private func openButtonSelectEditor(_ sender: NSMenuItem) {
+        guard let payload = sender.representedObject as? [Any],
+              payload.count == 2,
+              let projectId = payload[0] as? UUID,
+              let editorId = payload[1] as? String,
+              let project = projects.first(where: { $0.id == projectId }) else { return }
+        projectSetDefaultEditor(project, editorId: editorId)
     }
 }

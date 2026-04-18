@@ -320,6 +320,7 @@ class TabButton: NSView {
 
     override func rightMouseDown(with event: NSEvent) {
         let menu = NSMenu()
+        menu.font = NSFont.systemFont(ofSize: 12)
         let renameItem = NSMenuItem(title: "Rename Tab...", action: #selector(contextRename), keyEquivalent: "")
         renameItem.target = self
         menu.addItem(renameItem)
