@@ -2,6 +2,8 @@
 
 CTerm is a native macOS terminal app built around AI coding workflows. It puts multi-project navigation, Git worktrees, agent presets, split terminals, and project-level automation into one AppKit window. The goal is not to be a general-purpose terminal emulator. The goal is to be a durable workspace for long-running coding sessions, parallel tasks, and fast context switching.
 
+![CTerm screenshot](resources/CTerm.png)
+
 ## What CTerm is trying to fix
 
 AI-assisted development usually gets spread across too many places:
