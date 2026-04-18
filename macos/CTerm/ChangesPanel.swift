@@ -196,7 +196,7 @@ class ChangesPanel: NSView {
 
             // Empty label centered in file area
             emptyLabel.centerXAnchor.constraint(equalTo: fileScrollView.centerXAnchor),
-            emptyLabel.topAnchor.constraint(equalTo: fileScrollView.topAnchor, constant: 40),
+            emptyLabel.centerYAnchor.constraint(equalTo: fileScrollView.centerYAnchor),
         ])
     }
 
